@@ -92,11 +92,14 @@ const ATTENTION_SCALE = 1 / Math.sqrt(GEMMA_CONFIG.queryPreAttnScalar);
 const EMBED_SCALE = Math.sqrt(GEMMA_CONFIG.hiddenSize);
 const KV_CACHE_BLOCK_SIZE = 512;
 
-function runLinear({ weight, bias }: Linear, x: np.Array): np.Array {
+const runLinear = jit(function runLinear(
+  { weight, bias }: Linear,
+  x: np.Array,
+): np.Array {
   x = np.dot(x, weight.transpose());
   if (bias) x = x.add(bias);
   return x;
-}
+});
 
 const runEmbedding = jit(function runEmbedding(
   { weight }: Linear,
@@ -108,20 +111,23 @@ const runEmbedding = jit(function runEmbedding(
   return weight.slice(tokenIds).astype(np.float32).mul(EMBED_SCALE);
 });
 
-function runGemmaRMSNorm(
-  { weight }: RMSNorm,
-  x: np.Array,
-  eps: number = GEMMA_CONFIG.rmsNormEps,
-): np.Array {
-  const dtype = x.dtype;
-  x = x.astype(np.float32);
-  const rms = x.ref.mul(x.ref).mean(-1, { keepdims: true });
-  x = x.div(np.sqrt(rms.add(eps)));
+const runGemmaRMSNorm = jit(
+  function runGemmaRMSNorm(
+    { weight }: RMSNorm,
+    x: np.Array,
+    eps: number = GEMMA_CONFIG.rmsNormEps,
+  ): np.Array {
+    const dtype = x.dtype;
+    x = x.astype(np.float32);
+    const rms = x.ref.mul(x.ref).mean(-1, { keepdims: true });
+    x = x.div(np.sqrt(rms.add(eps)));
 
-  // Gemma RMSNorm weights are zero-centered: output = norm(x) * (1 + weight).
-  const scale = weight.astype(np.float32).add(1);
-  return x.mul(scale).astype(dtype);
-}
+    // Gemma RMSNorm weights are zero-centered: output = norm(x) * (1 + weight).
+    const scale = weight.astype(np.float32).add(1);
+    return x.mul(scale).astype(dtype);
+  },
+  { staticArgnums: [2] },
+);
 
 function rotateHalf(x: np.Array): np.Array {
   const [x1, x2] = np.split(x, 2, -1);

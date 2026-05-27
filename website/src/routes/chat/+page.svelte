@@ -42,16 +42,21 @@
   let input = $state("");
   let running = $state(false);
   let status = $state("");
-  let generatedCount = $state(0);
-  let elapsedMs = $state(0);
+  let prefillCount = $state(0);
+  let prefillElapsedMs = $state(0);
+  let decodeCount = $state(0);
+  let decodeElapsedMs = $state(0);
 
   let maxNewTokens = $state(2048);
   let temperature = $state(0.8);
   let topK = $state(64);
   let topP = $state(0.95);
 
-  const tokensPerSecond = $derived(
-    elapsedMs > 0 ? generatedCount / (elapsedMs / 1000) : 0,
+  const prefillTps = $derived(
+    prefillElapsedMs > 0 ? prefillCount / (prefillElapsedMs / 1000) : 0,
+  );
+  const decodeTps = $derived(
+    decodeElapsedMs > 0 ? decodeCount / (decodeElapsedMs / 1000) : 0,
   );
 
   async function scrollToBottom() {
@@ -84,7 +89,7 @@
   async function getModel(): Promise<GemmaModel> {
     if (_model) return _model;
 
-    status = "Downloading Gemma 3 weights…";
+    status = "Downloading model weights…";
     const data = await downloadManager.fetch(
       "Gemma 3 270M weights",
       WEIGHTS_URL,
@@ -138,32 +143,39 @@
   }
 
   function sampleLogits(
-    logits: ArrayLike<number>,
+    logits: Float32Array,
     opts: {
       temperature: number;
       topK: number;
       topP: number;
-      banned: Set<number>;
     },
   ): number {
     const k = Math.max(1, Math.min(opts.topK, logits.length));
     const candidates: { id: number; logit: number }[] = [];
 
     for (let id = 0; id < logits.length; id++) {
-      if (opts.banned.has(id)) continue;
-      const logit = Number(logits[id]);
+      const logit = logits[id];
       if (Number.isNaN(logit)) continue;
 
-      if (candidates.length < k) {
-        candidates.push({ id, logit });
-        candidates.sort((a, b) => a.logit - b.logit);
-      } else if (logit > candidates[0].logit) {
-        candidates[0] = { id, logit };
-        candidates.sort((a, b) => a.logit - b.logit);
+      // Keep the candidates in order of descending logit value, maintain insertion.
+      if (
+        candidates.length < k ||
+        logit > candidates[candidates.length - 1].logit
+      ) {
+        let insertIndex = 0;
+        while (
+          insertIndex < candidates.length &&
+          logit < candidates[insertIndex].logit
+        ) {
+          insertIndex++;
+        }
+        candidates.splice(insertIndex, 0, { id, logit });
+        if (candidates.length > k) {
+          candidates.pop();
+        }
       }
     }
 
-    candidates.sort((a, b) => b.logit - a.logit);
     if (candidates.length === 0) {
       throw new Error("Model returned all-NaN logits.");
     }
@@ -197,28 +209,18 @@
     return candidates[kept - 1].id;
   }
 
-  async function sampleNextToken(
-    logits: np.Array,
-    tokenizer: tokenizers.SentencePiece,
-    extraBanned: number[] = [],
-  ): Promise<number> {
+  async function sampleNextToken(logits: np.Array): Promise<number> {
     const data = await logits.data();
-    return sampleLogits(data as ArrayLike<number>, {
+    return sampleLogits(data as Float32Array, {
       temperature,
       topK,
       topP,
-      banned: new Set([
-        GEMMA_CONFIG.padTokenId,
-        tokenizer.bosToken,
-        START_OF_TURN_TOKEN,
-        ...extraBanned,
-      ]),
     });
   }
 
   async function runChat(history: ChatMessage[], assistantMessageId: number) {
-    generatedCount = 0;
-    elapsedMs = 0;
+    prefillCount = prefillElapsedMs = 0;
+    decodeCount = decodeElapsedMs = 0;
 
     await setupDevice();
     const tokenizer = await getTokenizer();
@@ -237,18 +239,16 @@
     try {
       status = `Reading ${promptTokens.length} context tokens…`;
       logits = runGemmaPrefill(tree.ref(model), inputIds, state);
-      await scrollToBottom();
+      scrollToBottom();
 
       for (let i = 0; i < maxNewTokens; i++) {
-        status = `Sampling token ${i + 1}/${maxNewTokens}…`;
+        status = `Sampling ${i + 1}/${maxNewTokens}…`;
         const sampledLogits = logits;
         logits = null; // logits.data() consumes this array; avoid disposing it again in finally.
         const stopTokens = [tokenizer.eosToken, END_OF_TURN_TOKEN];
-        const nextToken = await sampleNextToken(
-          sampledLogits,
-          tokenizer,
-          generatedTokens.length === 0 ? stopTokens : [],
-        );
+        // if (i === 4 || i === 5) profiler.startTrace();
+        const nextToken = await sampleNextToken(sampledLogits);
+        // if (i === 4 || i === 5) profiler.stopTrace();
 
         console.debug("Gemma sampled token", {
           nextToken,
@@ -256,27 +256,29 @@
         });
 
         if (stopTokens.includes(nextToken)) {
-          status = "Done.";
           break;
         }
 
         generatedTokens.push(nextToken);
-        generatedCount = i + 1;
-        elapsedMs = performance.now() - startTime;
+        if (i === 0) {
+          prefillCount = promptTokens.length;
+          prefillElapsedMs = performance.now() - startTime;
+        } else {
+          decodeCount++;
+          decodeElapsedMs = performance.now() - startTime - prefillElapsedMs;
+        }
         updateMessage(
           assistantMessageId,
           decodeTokens(tokenizer, generatedTokens),
         );
-        await scrollToBottom();
+        scrollToBottom();
 
         if (i === maxNewTokens - 1) break;
         status = `Running token ${i + 1}/${maxNewTokens}…`;
         logits = runGemmaStep(tree.ref(model), nextToken, state);
-        await tick();
       }
 
-      elapsedMs = performance.now() - startTime;
-      if (!status.startsWith("Done")) status = "Done.";
+      status = "✔️ Done";
       if (generatedTokens.length === 0)
         updateMessage(assistantMessageId, "(end of text)");
     } finally {
@@ -326,22 +328,28 @@
     messages = [];
     input = "";
     status = "";
-    generatedCount = 0;
-    elapsedMs = 0;
+    prefillCount = prefillElapsedMs = 0;
+    decodeCount = decodeElapsedMs = 0;
   }
 </script>
 
-<title>Gemma 3 Chat</title>
+<title>jax-js model chat</title>
 
 <DownloadManager bind:this={downloadManager} />
 
 <main class="h-dvh overflow-hidden bg-white text-gray-950 flex flex-col">
-  <header class="shrink-0 border-b border-gray-200 px-4 py-3">
+  <header class="shrink-0 border-b border-gray-200 px-4 py-2">
     <div class="mx-auto max-w-4xl flex items-center justify-between gap-4">
       <div>
-        <h1 class="font-semibold leading-tight">Gemma 3 Chat</h1>
+        <h1 class="font-semibold">
+          Chat
+          <span
+            class="font-normal border rounded-md px-1 ml-1 text-sm text-gray-500 border-gray-300"
+            >Gemma 3 270M</span
+          >
+        </h1>
         <p class="text-sm text-gray-500">
-          270M parameters running locally with jax-js + WebGPU.
+          Running locally with jax-js + WebGPU
         </p>
       </div>
 
@@ -427,10 +435,10 @@
     <div class="mx-auto max-w-3xl">
       {#if messages.length === 0}
         <div class="py-24 text-center">
-          <h2 class="text-2xl font-semibold mb-2">Ask Gemma anything</h2>
+          <h2 class="text-2xl font-semibold mb-2">Talk to an LLM</h2>
           <p class="text-gray-500 max-w-md mx-auto">
             The first message downloads and caches a 536&nbsp;MB fp16
-            checkpoint. Everything after that runs locally in your browser.
+            checkpoint. Everything runs locally in your browser.
           </p>
         </div>
       {:else}
@@ -473,13 +481,13 @@
         void sendMessage();
       }}
     >
-      <div class="rounded-2xl border border-gray-300 bg-white p-2 shadow-sm">
+      <div class="rounded-2xl border border-gray-300 bg-white p-2">
         <textarea
           class="min-h-11 max-h-40 w-full resize-none px-2 py-2 outline-none disabled:bg-white disabled:text-gray-400"
           rows="2"
           placeholder={hasModel
-            ? "Message Gemma…"
-            : "Message Gemma… (downloads model on first send)"}
+            ? "Send a message…"
+            : "Send a message… (will download model)"}
           bind:value={input}
           disabled={running}
           onkeydown={(event) => {
@@ -493,11 +501,14 @@
         <div
           class="flex items-center justify-between gap-3 border-t border-gray-100 pt-2"
         >
-          <div class="min-h-5 text-xs text-gray-500">
+          <div class="min-h-5 text-xs text-gray-500 tabular-nums">
             {#if status}
               {status}
-              {#if generatedCount > 0}
-                · {tokensPerSecond.toFixed(2)} tok/s
+              {#if prefillCount > 0}
+                · Prefill {prefillTps.toFixed(1)} tok/s
+              {/if}
+              {#if decodeCount > 0}
+                · Decode {decodeTps.toFixed(1)} tok/s
               {/if}
             {/if}
           </div>
