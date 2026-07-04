@@ -361,6 +361,59 @@
     });
   }
 
+  function createArrowMaterial(color: number) {
+    return new THREE.MeshBasicMaterial({
+      color,
+      depthTest: false,
+      depthWrite: false,
+    });
+  }
+
+  function createComponentArrow(
+    direction: THREE.Vector3,
+    origin: THREE.Vector3,
+    length: number,
+    color: number,
+    boundsRadius: number,
+    headScale = 1,
+  ) {
+    const group = new THREE.Group();
+    const unit = direction.clone().normalize();
+    const rotation = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      unit,
+    );
+    const headLength =
+      Math.max(0.09, Math.min(0.21, boundsRadius * 0.0325)) * headScale;
+    const shaftLength = Math.max(0.01, length - headLength);
+    const shaftRadius = Math.max(
+      0.009,
+      Math.min(0.0225, boundsRadius * 0.0035),
+    );
+    const headRadius = headLength * 0.38;
+
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 16),
+      createArrowMaterial(color),
+    );
+    shaft.quaternion.copy(rotation);
+    shaft.position.copy(origin).addScaledVector(unit, shaftLength * 0.5);
+    shaft.renderOrder = 10;
+
+    const head = new THREE.Mesh(
+      new THREE.ConeGeometry(headRadius, headLength, 20),
+      createArrowMaterial(color),
+    );
+    head.quaternion.copy(rotation);
+    head.position
+      .copy(origin)
+      .addScaledVector(unit, shaftLength + headLength * 0.5);
+    head.renderOrder = 10;
+
+    group.add(shaft, head);
+    return group;
+  }
+
   function updateScene() {
     if (!worldGroup) return;
 
@@ -418,23 +471,20 @@
           rawLength,
           bounds.radius * (i === 0 ? 0.78 : 0.58),
         );
-        const headLength = Math.max(0.16, Math.min(0.34, bounds.radius * 0.06));
-        const headWidth = headLength * 0.68;
-        const forward = new THREE.ArrowHelper(
+        const forward = createComponentArrow(
           direction,
           origin,
           length,
           pcColors[i],
-          headLength,
-          headWidth,
+          bounds.radius,
         );
-        const backward = new THREE.ArrowHelper(
+        const backward = createComponentArrow(
           direction.clone().multiplyScalar(-1),
           origin,
           length,
           pcColors[i],
-          headLength * 0.7,
-          headWidth * 0.75,
+          bounds.radius,
+          0.8,
         );
         axesGroup.add(forward, backward);
       }
