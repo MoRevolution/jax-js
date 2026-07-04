@@ -1,8 +1,18 @@
 // Linear algebra functions, mirroring `jax.lax.linalg`.
 
-import { moveaxis } from "./numpy";
+import * as np from "./numpy";
+import { DType, isFloatDtype } from "../alu";
 import { Array, type ArrayLike, fudgeArray } from "../frontend/array";
 import * as core from "../frontend/core";
+import { checkSquare } from "../utils";
+
+function defaultJacobiMaxSweeps(n: number): number {
+  return Math.max(8, 2 * n);
+}
+
+function jacobiTolerance(dtype: DType): number {
+  return dtype === DType.Float64 ? 1e-12 : 1e-6;
+}
 
 /**
  * Compute the Cholesky decomposition of a symmetric positive-definite matrix.
@@ -35,7 +45,55 @@ export function cholesky(
   { upper = false }: { upper?: boolean } = {},
 ): Array {
   const L = core.cholesky(a) as Array;
-  return upper ? moveaxis(L, -2, -1) : L;
+  return upper ? np.moveaxis(L, -2, -1) : L;
+}
+
+/**
+ * Eigendecomposition of real symmetric matrices.
+ *
+ * This uses a cyclic Jacobi routine with an internal convergence check and a
+ * fixed maximum number of sweeps.
+ *
+ * Eigenvectors are returned as columns in the first result, and eigenvalues are
+ * returned in ascending order in the second result.
+ */
+export function eigh(
+  x: ArrayLike,
+  {
+    lower = true,
+    sortEigenvalues = true,
+    symmetrizeInput = true,
+  }: {
+    lower?: boolean;
+    sortEigenvalues?: boolean;
+    symmetrizeInput?: boolean;
+  } = {},
+): [Array, Array] {
+  x = fudgeArray(x);
+  const n = checkSquare("eigh", x.shape);
+  if (!isFloatDtype(x.dtype) || x.dtype === DType.Float16) {
+    x = x.astype(np.float32);
+  }
+  if (symmetrizeInput) {
+    x = x.ref.add(np.matrixTranspose(x)).mul(0.5);
+  } else if (!lower) {
+    x = np.matrixTranspose(x);
+  }
+
+  const batchShape = x.shape.slice(0, -2);
+  let v: Array;
+  [x, v] = core.jacobiEigh(x, {
+    maxSweeps: defaultJacobiMaxSweeps(n),
+    tolerance: jacobiTolerance(x.dtype),
+  }) as [Array, Array];
+
+  const valuesUnsorted = np.diagonal(x, 0, -2, -1);
+  if (!sortEigenvalues) return [v, valuesUnsorted];
+
+  const order = np.argsort(valuesUnsorted.ref);
+  const values = np.takeAlongAxis(valuesUnsorted, order.ref, -1);
+  const vectors = np.takeAlongAxis(v, order.reshape([...batchShape, 1, n]), -1);
+  return [vectors, values];
 }
 
 /**
@@ -108,13 +166,13 @@ export function triangularSolve(
     // b and x (output) values.
     transposeA = !transposeA;
   } else {
-    b = moveaxis(b, -2, -1);
+    b = np.moveaxis(b, -2, -1);
   }
   if (transposeA) {
-    a = moveaxis(a, -2, -1);
+    a = np.moveaxis(a, -2, -1);
     lower = !lower;
   }
   let x = core.triangularSolve(a, b, { lower, unitDiagonal }) as Array;
-  if (leftSide) x = moveaxis(x, -2, -1);
+  if (leftSide) x = np.moveaxis(x, -2, -1);
   return x;
 }
