@@ -21,6 +21,7 @@
     "@tailwindcss/vite": "^4.3.1",
     "@types/d3-array": "^3.2.1",
     "@types/d3-scale-chromatic": "^3.1.0",
+    "@types/three": "^0.185.0",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@webgpu/types": "^0.1.70",
     "eslint": "^9.39.4",
@@ -62,6 +63,7 @@
     "onnx-buf": "^1.20.0-1",
     "onnxruntime-web": "^1.27.0",
     "p-throttle": "^7.0.0",
-    "svelte": "^5.56.3"
+    "svelte": "^5.56.3",
+    "three": "^0.185.1"
   }
 }

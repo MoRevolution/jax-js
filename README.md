@@ -80,11 +80,10 @@ Demos on the jax-js website:
 - [Object detection: DETR ResNet-50 (ONNX)](https://jax-js.com/detr-resnet-50)
 - [Fluid simulation (Navier-Stokes)](https://jax-js.com/fluid-sim)
 - [Neural cellular automata](https://jax-js.com/nca-growing)
-- [In-browser REPL](https://jax-js.com/repl)
-- [Matmul benchmark](https://jax-js.com/bench/matmul)
-- [Matvec benchmark](https://jax-js.com/bench/matvec)
-- [Conv2d benchmark](https://jax-js.com/bench/conv2d)
+- [Principal component analysis](https://jax-js.com/pca)
 - [Mandelbrot set](https://jax-js.com/mandelbrot)
+- [In-browser REPL](https://jax-js.com/repl)
+- [Benchmark suite](https://jax-js.com/bench)
 
 ## Feature comparison
 

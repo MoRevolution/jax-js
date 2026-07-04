@@ -67,6 +67,11 @@
       description: "Compute embeddings for book passages.",
     },
     {
+      title: "Principal Component Analysis",
+      href: resolve("/pca"),
+      description: "Explore principal components of a 3D point cloud.",
+    },
+    {
       title: "D-FINE Detection",
       href: resolve("/d-fine"),
       description: "Run an ONNX object detector locally with WebGPU.",
